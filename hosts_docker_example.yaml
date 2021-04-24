@@ -1,0 +1,22 @@
+all:
+  hosts:
+    test_SSH_1:
+      ansible_connection: docker
+      ansible_host: test_SSH_1
+      ansible_user: root
+    test_SSH_2:
+      ansible_connection: docker
+      ansible_host: test_SSH_2
+      ansible_user: root
+    test_SSH_3:
+      ansible_connection: docker
+      ansible_host: test_SSH_3
+      ansible_user: root
+    test_SSH_4:
+      ansible_connection: docker
+      ansible_host: test_SSH_4
+      ansible_user: root
+    test_SSH_5:
+      ansible_connection: docker
+      ansible_host: test_SSH_5
+      ansible_user: root

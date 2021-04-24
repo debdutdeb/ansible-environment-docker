@@ -1,0 +1,152 @@
+#! /usr/bin/env python3
+
+from docker import DockerClient
+from docker import errors as derr
+from docker.models.containers import Container
+import os, sys
+import yaml
+import logging
+from collections import namedtuple
+from argparse import ArgumentParser
+
+
+class ContainerContext:
+    def __init__(self, ctx=None):
+        self.ctx = ctx
+
+    @classmethod
+    def from_container(cls, container: Container):
+        Context = namedtuple("Context", ["config_abs_path", "service"])
+        return cls(
+            Context(
+                os.path.join(
+                    container.labels.get("com.docker.compose.project.working_dir", ""),
+                    container.labels.get("com.docker.compose.project.config_files", "")
+                ),
+                container.labels.get("com.docker.compose.service", "")
+            )
+        )
+
+    @classmethod
+    def from_config(cls, config: str):
+        try:
+            with open(config, 'r') as conf:
+                buffer = yaml.full_load(conf)
+        except FileNotFoundError: log.critical(f"{config} file not found.")
+        except Exception as e: log.critical(e)
+        else:
+            Context = namedtuple("Context", ["config_abs_path", "service"])
+            ctxs = []
+            for service in buffer["services"].keys():
+                ctxs.append(Context(config, service))
+            return cls(ctxs)
+        return cls()
+
+    def __eq__(self, cc):
+        if isinstance(self.ctx, list): return cc.ctx in self.ctx
+        elif isinstance(cc.ctx, list): return self.ctx in cc.ctx
+        else: return cc.ctx == self.ctx
+
+    def get_service(self):
+        if isinstance(self.ctx, list):
+            return [ctx.service for ctx in self.ctx]
+        else: return self.ctx.service
+
+    def get_config_abs_path(self):
+        if isinstance(self.ctx, list):
+            return [ctx.config_abs_path for ctx in self.ctx]
+        else: return self.ctx.config_abs_path
+
+class Conteener:
+    def __init__(self, container: Container):
+        self.container = container
+    
+    def get_addr(self):
+        for _, network in self.container.attrs["NetworkSettings"]["Networks"].items():
+            return network["IPAddress"]
+
+    def get_name(self):
+        return self.container.name
+
+    def get_short_id(self):
+        return self.container.short_id
+
+class Docker(DockerClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def conteener_list(self):
+        for container in self.containers.list():
+            yield Conteener(container)
+
+
+def main():
+    global args
+    global log
+    default_ctx = ContainerContext.from_config(args.compose_file)
+    for n, (config_abs_path, service) in enumerate(zip(default_ctx.get_config_abs_path(), default_ctx.get_service())):
+        log.debug(f"Default context #{n} set: <CONFIG: \"{config_abs_path}\", SERVICE: \"{service}\">")
+    try:
+        client = Docker(base_url=os.environ.get("DOCKER_HOST", "unix:///run/docker.sock"));
+    except derr.APIError:
+        log.critical("Couldn't initialize docker client. Exiting ..")
+    inventory = {
+        "all": {
+            "hosts": {}
+        }
+    }
+    try: conteener_list = client.conteener_list()
+    except derr.APIError:
+        log.critical("Failed to get container list. Exiting..")
+    for n, conteener in enumerate(conteener_list):
+        container_ctx = ContainerContext.from_container(conteener.container)
+        if default_ctx != container_ctx:
+            log.debug(f"Container context #{n} didn't match (skipping): <CONFIG: \"{container_ctx.get_config_abs_path()}\", SERVICE: \"{container_ctx.get_service()}\">")
+            continue
+        log.debug(f"Container context #{n} matched: <CONFIG: \"{container_ctx.get_config_abs_path()}\", SERVICE: \"{container_ctx.get_service()}\">")
+        name = conteener.get_name()
+        if args.ssh:
+            addr = conteener.get_addr()
+            log.info(f"Adding container #{n}, name: {name}, addr: {addr}")
+            inventory["all"]["hosts"][name] = {
+                "ansible_connection": "ssh",
+                "ansible_host": addr,
+                "ansible_port": args.port,
+                "ansible_user": args.user
+            }
+        else:
+            short_id = conteener.get_short_id()
+            log.info(f"Adding container #{n}, name: {name}, short id: {short_id}")
+            inventory["all"]["hosts"][name] = {
+                "ansible_connection": "docker",
+                "ansible_host": name,
+                "ansible_user": args.user
+            }
+    try:
+        with open(args.output_filename, 'w') as inventory_file:
+            yaml.dump(inventory, inventory_file, indent=2)
+    except Exception as e:
+        log.error(f"\"{args.output_filename}\" save failed. Error: {e}")
+        return 1
+    else:
+        log.info(f"\"{args.output_filename}\" successfully saved.")
+        return 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(format="[%(levelname)s][%(name)s] %(message)s")
+    log = logging.getLogger("ansible_inventory")
+    log.setLevel(os.environ.get("LOG_LEVEL", logging.INFO))
+    parser = ArgumentParser(prog="gen_inventory")
+    parser.add_argument("-c", dest="compose_file", help="The compose file to use as a template.", type=str, required=True, metavar="compose_file")
+    parser.add_argument("-s", dest="ssh", help="Use SSH as the connection type.", action="store_true")
+    parser.add_argument("-p", dest="port", help="SSH port to use. Use this option with [-s]. Defaults to 22", type=int, metavar="[ssh_port]", default=22)
+    parser.add_argument("-d", dest="docker", help="Use Docker as the connection type.", action="store_true")
+    parser.add_argument("-u", dest="user", help="The log in user, SSH or Docker. Defaults to root.", type=str, metavar="[user]", default="root")
+    parser.add_argument("-o", dest="output_filename", help="Output filename. Defaults to hosts.yaml", type=str, metavar="[output_filename]", default="hosts.yaml")
+    args = parser.parse_args()
+    if not args.ssh ^ args.docker:
+        log.error("SSH and Docker cannot be used together. You must use one at a time.")
+        sys.exit(1)
+    if not args.compose_file.startswith('/'): args.compose_file = os.path.abspath(args.compose_file)
+    sys.exit(main())
