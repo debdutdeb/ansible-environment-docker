@@ -84,7 +84,7 @@ def main():
     global args
     global log
     default_ctx = ContainerContext.from_config(args.compose_file)
-    for n, (config_abs_path, service) in enumerate(zip(default_ctx.get_config_abs_path(), default_ctx.get_service())):
+    for n, (config_abs_path, service) in enumerate(zip(default_ctx.get_config_abs_path(), default_ctx.get_service()), 1):
         log.debug(f"Default context #{n} set: <CONFIG: \"{config_abs_path}\", SERVICE: \"{service}\">")
     try:
         client = Docker(base_url=os.environ.get("DOCKER_HOST", "unix:///run/docker.sock"));
@@ -98,7 +98,7 @@ def main():
     try: conteener_list = client.conteener_list()
     except derr.APIError:
         log.critical("Failed to get container list. Exiting..")
-    for n, conteener in enumerate(conteener_list):
+    for n, conteener in enumerate(conteener_list, 1):
         container_ctx = ContainerContext.from_container(conteener.container)
         if default_ctx != container_ctx:
             log.debug(f"Container context #{n} didn't match (skipping): <CONFIG: \"{container_ctx.get_config_abs_path()}\", SERVICE: \"{container_ctx.get_service()}\">")
