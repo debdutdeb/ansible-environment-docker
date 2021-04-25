@@ -11,11 +11,25 @@ from argparse import ArgumentParser
 
 
 class ContainerContext:
+    """
+    A Context is what differentiates one container from another.
+    Multiple continers can belong to the same context.
+    You can identify a container type by looking at its context. What I
+    mean by context is that what compose file and service it belongs to.
+
+    A unique compose file and the service name tells us that this is a unique container type.
+    No matter what the scale/project it is.
+    """
+    # ERRORS ARE NOT HANDLED HERE
     def __init__(self, ctx=None):
+        # ctx can be either Context (namedtuple)
+        # or a list of Contexts (namedtuples).
         self.ctx = ctx
 
     @classmethod
     def from_container(cls, container: Container):
+        # This is used to create a ContainerContext object from a Container
+        # type. Helps in the iteration or all the containers.
         Context = namedtuple("Context", ["config_abs_path", "service"])
         return cls(
             Context(
@@ -29,35 +43,46 @@ class ContainerContext:
 
     @classmethod
     def from_config(cls, config: str):
-        try:
-            with open(config, 'r') as conf:
-                buffer = yaml.full_load(conf)
-        except FileNotFoundError: log.critical(f"{config} file not found.")
-        except Exception as e: log.critical(e)
-        else:
-            Context = namedtuple("Context", ["config_abs_path", "service"])
-            ctxs = []
-            for service in buffer["services"].keys():
-                ctxs.append(Context(config, service))
-            return cls(ctxs)
-        return cls()
+        # Builds the default context[s] from
+        # the compose files passed using `-c` option.
+        # This returns a list.
+
+        # EXCEPTIONS:
+        # FileNotFoundError
+        # Other
+        with open(config, 'r') as conf:
+            buffer = yaml.full_load(conf)
+        Context = namedtuple("Context", ["config_abs_path", "service"])
+        ctxs = []
+        for service in buffer["services"].keys():
+            ctxs.append(Context(config, service))
+        return cls(ctxs)
 
     def __eq__(self, cc):
-        if isinstance(self.ctx, list): return cc.ctx in self.ctx
-        elif isinstance(cc.ctx, list): return self.ctx in cc.ctx
-        else: return cc.ctx == self.ctx
+        # Making sure that the == operator works on different types of ctxs.
+        if isinstance(self.ctx, list):
+            return cc.ctx in self.ctx
+        elif isinstance(cc.ctx, list):
+            return self.ctx in cc.ctx
+        else:
+            return cc.ctx == self.ctx
 
     def get_service(self):
         if isinstance(self.ctx, list):
             return [ctx.service for ctx in self.ctx]
-        else: return self.ctx.service
+        else:
+            return self.ctx.service
 
     def get_config_abs_path(self):
         if isinstance(self.ctx, list):
             return [ctx.config_abs_path for ctx in self.ctx]
-        else: return self.ctx.config_abs_path
+        else:
+            return self.ctx.config_abs_path
 
 class Conteener:
+    """
+    Just a wrapper class for the get_* methods.
+    """
     def __init__(self, container: Container):
         self.container = container
     
@@ -72,10 +97,18 @@ class Conteener:
         return self.container.short_id
 
 class Docker(DockerClient):
+    """
+    Wrapper class to include the conteener_list method.
+    This is helpful because now I can use those get_* methods directly.
+    And if I have to access the "Container" object directly, I can by doing
+    conteener.container.
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def conteener_list(self):
+        # EXCEPTIONS:
+        # derr.APIError
         for container in self.containers.list():
             yield Conteener(container)
 
@@ -83,7 +116,12 @@ class Docker(DockerClient):
 def main():
     global args
     global log
-    default_ctx = ContainerContext.from_config(args.compose_file)
+    try:
+        default_ctx = ContainerContext.from_config(args.compose_file)
+    except FileNotFoundError:
+        log.critical(f"{args.compose_file} not found. Exiting..")
+    except PermissionError:
+        log.critical(f"{args.compose_file} can't be opened. Permission denied.")
     for n, (config_abs_path, service) in enumerate(zip(default_ctx.get_config_abs_path(), default_ctx.get_service()), 1):
         log.debug(f"Default context #{n} set: <CONFIG: \"{config_abs_path}\", SERVICE: \"{service}\">")
     try:
@@ -95,7 +133,8 @@ def main():
             "hosts": {}
         }
     }
-    try: conteener_list = client.conteener_list()
+    try:
+        conteener_list = client.conteener_list()
     except derr.APIError:
         log.critical("Failed to get container list. Exiting..")
     for n, conteener in enumerate(conteener_list, 1):
@@ -148,5 +187,6 @@ if __name__ == "__main__":
     if not args.ssh ^ args.docker:
         log.error("SSH and Docker cannot be used together. You must use one at a time.")
         sys.exit(1)
-    if not args.compose_file.startswith('/'): args.compose_file = os.path.abspath(args.compose_file)
+    if not args.compose_file.startswith('/'):
+        args.compose_file = os.path.abspath(args.compose_file)
     sys.exit(main())
